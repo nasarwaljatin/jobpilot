@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "JobPilot Autofill",
+  "version": "1.0.0",
+  "description": "Fills job application forms from your JobPilot profile. You review and submit.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "JobPilot Autofill"
+  },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "*://*.greenhouse.io/*",
+    "*://*.lever.co/*",
+    "*://*.ashbyhq.com/*",
+    "*://*.myworkdayjobs.com/*",
+    "*://*.smartrecruiters.com/*"
+  ]
+}
