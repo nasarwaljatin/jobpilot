@@ -4,6 +4,14 @@ import { jwtVerify, SignJWT } from "jose";
 export const SESSION_COOKIE = "jp_session";
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
+/** Non-null when sessions can't be issued, so forms can show a clear message instead of crashing. */
+export function sessionConfigError(): string | null {
+  if (!process.env.AUTH_SECRET && process.env.NODE_ENV === "production") {
+    return "Server setup incomplete: AUTH_SECRET is not set. Add it in your hosting settings and redeploy.";
+  }
+  return null;
+}
+
 function secretKey(): Uint8Array {
   const secret = process.env.AUTH_SECRET;
   if (!secret) {

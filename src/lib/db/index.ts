@@ -42,7 +42,11 @@ async function createDb(): Promise<DB> {
 const globalForDb = globalThis as unknown as { __jobpilotDb?: Promise<DB> };
 
 export function getDb(): Promise<DB> {
-  globalForDb.__jobpilotDb ??= createDb();
+  globalForDb.__jobpilotDb ??= createDb().catch((err) => {
+    // Don't cache a failed connection; the next request retries.
+    globalForDb.__jobpilotDb = undefined;
+    throw err;
+  });
   return globalForDb.__jobpilotDb;
 }
 

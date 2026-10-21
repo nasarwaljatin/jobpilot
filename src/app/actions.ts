@@ -8,6 +8,7 @@ import { redirect } from "next/navigation";
 import { extractText } from "unpdf";
 import { endSession, requireUser, startSession } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
+import { sessionConfigError } from "@/lib/session";
 import { APPLICATION_STATUSES, type ApplicationStatus } from "@/lib/db/schema";
 import { refreshAllCompanies, refreshCompany } from "@/lib/ingest";
 import { recomputeMatchesForUser } from "@/lib/matcher";
@@ -31,29 +32,49 @@ export async function signup(_: ActionState, fd: FormData): Promise<ActionState>
   const name = str(fd, "name");
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { error: "Enter a valid email." };
   if (password.length < 8) return { error: "Password must be at least 8 characters." };
+  const configError = sessionConfigError();
+  if (configError) return { error: configError };
 
-  const db = await getDb();
-  const [existing] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, email));
-  if (existing) return { error: "An account with this email already exists." };
+  let userId: string;
+  try {
+    const db = await getDb();
+    const [existing] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, email));
+    if (existing) return { error: "An account with this email already exists." };
 
-  const [user] = await db
-    .insert(schema.users)
-    .values({ email, name, passwordHash: await bcrypt.hash(password, 10) })
-    .returning({ id: schema.users.id });
-  await db.insert(schema.profiles).values({ userId: user.id, fullName: name });
-  await startSession(user.id);
+    const [user] = await db
+      .insert(schema.users)
+      .values({ email, name, passwordHash: await bcrypt.hash(password, 10) })
+      .returning({ id: schema.users.id });
+    await db.insert(schema.profiles).values({ userId: user.id, fullName: name });
+    userId = user.id;
+  } catch (err) {
+    console.error("signup failed", err);
+    return { error: "Server error: could not reach the database. Check /api/health." };
+  }
+  await startSession(userId);
   redirect("/profile?welcome=1");
 }
 
 export async function login(_: ActionState, fd: FormData): Promise<ActionState> {
   const email = str(fd, "email").toLowerCase();
   const password = str(fd, "password");
-  const db = await getDb();
-  const [user] = await db.select().from(schema.users).where(eq(schema.users.email, email));
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    return { error: "Incorrect email or password." };
+  const configError = sessionConfigError();
+  if (configError) return { error: configError };
+
+  let userId: string;
+  try {
+    const db = await getDb();
+    const [user] = await db.select().from(schema.users).where(eq(schema.users.email, email));
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      return { error: "Incorrect email or password." };
+    }
+    userId = user.id;
+  } catch (err) {
+    console.error("login failed", err);
+    return { error: "Server error: could not reach the database. Check /api/health." };
   }
-  await startSession(user.id);
+  // Kept outside the try: redirect() works by throwing.
+  await startSession(userId);
   redirect("/dashboard");
 }
 
