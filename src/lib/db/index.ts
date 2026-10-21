@@ -11,7 +11,8 @@ export type DB = PostgresJsDatabase<typeof schema>;
 // With DATABASE_URL set (production: Neon / Supabase / any Postgres) we use postgres-js.
 // Without it, local dev runs on an embedded PGlite database in ./.data — zero setup.
 async function createDb(): Promise<DB> {
-  const url = process.env.DATABASE_URL;
+  // Vercel's Neon integration sets both names; a manually added variable is usually DATABASE_URL.
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
   if (url) {
     // prepare:false keeps us compatible with transaction-mode poolers (Supabase, Neon).
     const client = postgres(url, { max: 3, prepare: false });

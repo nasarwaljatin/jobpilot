@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
 
-const url = process.env.DATABASE_URL;
+const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 if (!url) {
   if (process.argv.includes("--if-configured")) {
     console.log("DATABASE_URL not set; skipping migration.");
