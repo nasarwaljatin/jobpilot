@@ -39,6 +39,8 @@ button {
 }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.ai { border-color: #d97706; color: #d97706; }
+button[hidden] { display: none; }
 button.link { height: auto; border: 0; padding: 0; color: var(--accent); background: none; font-size: 12px; }
 .muted, .hint { color: var(--muted); }
 .hint { font-size: 11px; margin: 4px 0 0; }

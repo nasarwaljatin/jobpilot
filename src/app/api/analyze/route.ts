@@ -1,11 +1,10 @@
-import { and, eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { AiError, analyzeFit } from "@/lib/ai";
 import { getCurrentUser } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
+import { AI_DAILY_LIMIT, consumeAiQuota, refundAiQuota } from "@/lib/usage";
 
 export const maxDuration = 300;
-
-const DAILY_LIMIT = parseInt(process.env.AI_DAILY_LIMIT ?? "20", 10);
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -26,18 +25,8 @@ export async function POST(request: Request) {
   const [profile] = await db.select().from(schema.profiles).where(eq(schema.profiles.userId, user.id));
   if (!profile) return Response.json({ error: "Complete your profile first" }, { status: 400 });
 
-  // Per-user daily cap so a shared deployment can't run up the API bill.
-  const today = new Date().toISOString().slice(0, 10);
-  const [usage] = await db
-    .insert(schema.aiUsage)
-    .values({ userId: user.id, day: today, count: 1 })
-    .onConflictDoUpdate({
-      target: [schema.aiUsage.userId, schema.aiUsage.day],
-      set: { count: sql`${schema.aiUsage.count} + 1` },
-    })
-    .returning({ count: schema.aiUsage.count });
-  if (usage.count > DAILY_LIMIT) {
-    return Response.json({ error: `Daily AI limit reached (${DAILY_LIMIT}). Try again tomorrow.` }, { status: 429 });
+  if (!(await consumeAiQuota(db, user.id))) {
+    return Response.json({ error: `Daily AI limit reached (${AI_DAILY_LIMIT}). Try again tomorrow.` }, { status: 429 });
   }
 
   try {
@@ -56,11 +45,7 @@ export async function POST(request: Request) {
       });
     return Response.json({ analysis });
   } catch (err) {
-    // Failed calls shouldn't count against the user's quota.
-    await db
-      .update(schema.aiUsage)
-      .set({ count: sql`greatest(${schema.aiUsage.count} - 1, 0)` })
-      .where(and(eq(schema.aiUsage.userId, user.id), eq(schema.aiUsage.day, today)));
+    await refundAiQuota(db, user.id);
     if (err instanceof AiError) return Response.json({ error: err.message }, { status: 400 });
     console.error("analyze failed", err);
     return Response.json({ error: "Analysis failed. Please try again." }, { status: 500 });

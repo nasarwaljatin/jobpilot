@@ -1,6 +1,9 @@
 const $ = (id) => document.getElementById(id);
 let config = { server: "", token: "" };
 let tab = null;
+let aiAvailable = false;
+// Free-text questions left empty by the last Autofill, with the frame each lives in.
+let pendingQuestions = [];
 
 function setResult(text, ok = true) {
   $("result").textContent = text;
@@ -28,6 +31,7 @@ async function connect() {
   try {
     const data = await api(`/api/extension/profile?url=${encodeURIComponent(tab?.url || "")}`);
     $("status").textContent = `Connected as ${data.profile.email}`;
+    aiAvailable = Boolean(data.ai);
     if (data.job) {
       $("job").hidden = false;
       $("job").textContent = `Tracked job: ${data.job.title} at ${data.job.company}${data.coverLetter ? " (AI cover letter ready)" : ""}`;
@@ -43,6 +47,8 @@ async function connect() {
 
 async function fill() {
   $("fill").disabled = true;
+  $("draft").hidden = true;
+  pendingQuestions = [];
   setResult("Filling…");
   try {
     const data = await connect();
@@ -65,15 +71,68 @@ async function fill() {
 
     const filled = results.flatMap((r) => (r.result ? r.result.filled : []));
     const attached = results.some((r) => r.result && r.result.resumeAttached);
-    if (filled.length === 0 && !attached) {
+    pendingQuestions = results.flatMap((r) => (r.result?.questions ?? []).map((q) => ({ ...q, frameId: r.frameId })));
+    const n = pendingQuestions.length;
+    const longNote = n === 0 ? "" : ` ${n} long question${n === 1 ? "" : "s"} still empty.`;
+
+    if (filled.length === 0 && !attached && n === 0) {
       setResult("No empty fields recognised on this page.", false);
     } else {
-      setResult(`Filled ${filled.length} field${filled.length === 1 ? "" : "s"}${attached ? " and attached your resume" : ""}. Review, then submit.`);
+      setResult(`Filled ${filled.length} field${filled.length === 1 ? "" : "s"}${attached ? " and attached your resume" : ""}.${longNote} Review, then submit.`);
+    }
+    if (n > 0 && aiAvailable) {
+      $("draft").hidden = false;
+      $("draft").disabled = false;
+      $("draft").textContent = `Draft ${n} answer${n === 1 ? "" : "s"} with AI`;
+    } else if (n > 0) {
+      setResult(`${$("result").textContent} To draft them with AI, add an AI key on your JobPilot server.`);
     }
   } catch (e) {
     setResult(e.message, false);
   } finally {
     $("fill").disabled = false;
+  }
+}
+
+async function draftAnswers() {
+  if (pendingQuestions.length === 0) return;
+  $("draft").disabled = true;
+  setResult("Drafting answers from your resume… (10–40 seconds)");
+  try {
+    // Page text gives the AI the job description when this isn't a job JobPilot tracks.
+    const [top] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => (globalThis.jobpilotPageText ? globalThis.jobpilotPageText() : ""),
+    });
+    const out = await api("/api/extension/answers", {
+      method: "POST",
+      body: JSON.stringify({
+        url: tab.url,
+        pageTitle: tab.title,
+        pageText: top?.result ?? "",
+        questions: pendingQuestions.map(({ key, question, maxLength }) => ({ key, question, maxLength })),
+      }),
+    });
+
+    let count = 0;
+    const frames = [...new Set(pendingQuestions.map((q) => q.frameId))];
+    for (const frameId of frames) {
+      const keys = pendingQuestions.filter((q) => q.frameId === frameId).map((q) => q.key);
+      const subset = Object.fromEntries(keys.filter((k) => out.answers[k]).map((k) => [k, out.answers[k]]));
+      if (Object.keys(subset).length === 0) continue;
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, frameIds: [frameId] },
+        func: (a) => globalThis.jobpilotFillAnswers(a),
+        args: [subset],
+      });
+      count += res?.result ?? 0;
+    }
+    pendingQuestions = [];
+    $("draft").hidden = true;
+    setResult(`Drafted ${count} answer${count === 1 ? "" : "s"} (highlighted in amber). Read and edit each one before you submit.`);
+  } catch (e) {
+    setResult(e.message, false);
+    $("draft").disabled = false;
   }
 }
 
@@ -104,6 +163,7 @@ $("save").addEventListener("click", async () => {
 });
 
 $("fill").addEventListener("click", fill);
+$("draft").addEventListener("click", draftAnswers);
 $("applied").addEventListener("click", markApplied);
 
 (async () => {

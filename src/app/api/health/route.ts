@@ -1,5 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
+import { activeModel, activeProvider } from "@/lib/llm";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,11 @@ export async function GET() {
     AUTH_SECRET: Boolean(process.env.AUTH_SECRET),
     CRON_SECRET: Boolean(process.env.CRON_SECRET),
     ANTHROPIC_API_KEY: Boolean(process.env.ANTHROPIC_API_KEY),
+    OPENAI_API_KEY: Boolean(process.env.OPENAI_API_KEY),
+    NVIDIA_API_KEY: Boolean(process.env.NVIDIA_API_KEY),
   };
+  const provider = activeProvider();
+  const ai = provider ? { provider, model: activeModel(provider) } : null;
 
   let database: Record<string, unknown>;
   try {
@@ -29,5 +34,5 @@ export async function GET() {
 
   // Local dev runs without DATABASE_URL/AUTH_SECRET by design (embedded DB, dev-only secret).
   const ok = database.ok === true && (env.AUTH_SECRET || process.env.NODE_ENV !== "production");
-  return Response.json({ ok, env, database }, { status: ok ? 200 : 503 });
+  return Response.json({ ok, env, ai, database }, { status: ok ? 200 : 503 });
 }

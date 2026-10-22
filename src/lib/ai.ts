@@ -1,12 +1,9 @@
 import "server-only";
-import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import type { FitAnalysis, Profile } from "./db/schema";
+import { AiError, generateJson } from "./llm";
 
-export const aiEnabled = () => Boolean(process.env.ANTHROPIC_API_KEY);
-
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-5-5";
+export { AiError, aiEnabled } from "./llm";
 
 const FitAnalysisSchema = z.object({
   fit_score: z.number().int().describe("Honest 0-100 estimate of how competitive this candidate is"),
@@ -24,52 +21,84 @@ Ground everything in the resume provided. Never invent experience, employers, me
 Be direct about fit: a student applying to a senior role should hear that plainly.
 Write in plain, confident English without clichés ("I am writing to express my interest", "passionate", "synergy").`;
 
-export class AiError extends Error {}
+type JobContext = { title: string; company: string; location?: string; description: string };
 
-export async function analyzeFit(
-  profile: Profile,
-  job: { title: string; company: string; location: string; description: string },
-): Promise<FitAnalysis> {
-  if (!aiEnabled()) throw new AiError("AI is not configured: set ANTHROPIC_API_KEY.");
-  if (!profile.resumeText.trim()) throw new AiError("Add your resume on the Profile page first.");
-
-  const client = new Anthropic();
-  const candidate = [
+function candidateBlock(profile: Profile): string {
+  const lines = [
     `Name: ${profile.fullName}`,
     profile.headline && `Headline: ${profile.headline}`,
+    profile.location && `Based in: ${profile.location}`,
     profile.university && `Education: ${profile.degree} at ${profile.university}${profile.graduationYear ? `, graduating ${profile.graduationYear}` : ""}`,
     profile.skills.length > 0 && `Self-reported skills: ${profile.skills.join(", ")}`,
-  ]
-    .filter(Boolean)
+  ].filter(Boolean);
+  return `<candidate>\n${lines.join("\n")}\n</candidate>\n\n<resume>\n${profile.resumeText}\n</resume>`;
+}
+
+const jobBlock = (job: JobContext) =>
+  `<job company="${job.company}" title="${job.title}"${job.location ? ` location="${job.location}"` : ""}>\n${job.description}\n</job>`;
+
+export async function analyzeFit(profile: Profile, job: JobContext): Promise<FitAnalysis> {
+  if (!profile.resumeText.trim()) throw new AiError("Add your resume on the Profile page first.");
+  const out = await generateJson(FitAnalysisSchema, {
+    system: SYSTEM,
+    prompt: `${candidateBlock(profile)}\n\n${jobBlock(job)}\n\nAnalyze this candidate's fit for the job and draft the application materials.`,
+    maxTokens: 16000,
+    effort: "medium",
+  });
+  return { ...out, fit_score: Math.max(0, Math.min(100, out.fit_score)) };
+}
+
+export type FormQuestion = { key: string; question: string; maxLength: number | null };
+
+const AnswersSchema = z.object({
+  answers: z.array(
+    z.object({
+      key: z.string().describe("The key of the question being answered, copied exactly"),
+      answer: z.string().describe("The answer text, plain text with no markdown"),
+    }),
+  ),
+});
+
+const ANSWER_SYSTEM = `You draft answers to job application form questions for a university student or new graduate, written in their own voice (first person).
+Ground every answer in the resume, profile and saved answers provided. Never invent employers, projects, metrics, dates or skills. When an answer needs a specific fact you don't have (a number, a date, a person's name), write a short bracketed placeholder such as [number of users] so the candidate can fill it in.
+Use the job description to make answers specific to this company and role.
+Keep each answer within its character limit when one is given; otherwise aim for 60-150 words. Plain text only: no markdown, no headings, no bullet symbols, no greeting or sign-off.
+Write naturally and concretely, without clichés ("passionate", "I am excited to", "synergy", "fast-paced environment").
+Answer every question, using its exact key.`;
+
+/** Drafts answers to free-text application questions. Returns answers keyed by question key. */
+export async function draftAnswers(
+  profile: Profile,
+  job: JobContext,
+  questions: FormQuestion[],
+): Promise<Record<string, string>> {
+  if (!profile.resumeText.trim()) throw new AiError("Add your resume on the Profile page first.");
+  const saved = Object.entries(profile.answers)
+    .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`)
+    .join("\n");
+  const list = questions
+    .map((q) => `<question key="${q.key}"${q.maxLength ? ` max_characters="${q.maxLength}"` : ""}>${q.question}</question>`)
     .join("\n");
 
-  try {
-    const response = await client.beta.messages.parse({
-      model: MODEL,
-      max_tokens: 16000,
-      system: SYSTEM,
-      // Server-side fallback re-runs the request on Anthropic's recommended model if a safety classifier declines it.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: { effort: "medium", format: betaZodOutputFormat(FitAnalysisSchema) },
-      messages: [
-        {
-          role: "user",
-          content: `<candidate>\n${candidate}\n</candidate>\n\n<resume>\n${profile.resumeText}\n</resume>\n\n<job company="${job.company}" title="${job.title}" location="${job.location}">\n${job.description}\n</job>\n\nAnalyze this candidate's fit for the job and draft the application materials.`,
-        },
-      ],
-    });
+  const out = await generateJson(AnswersSchema, {
+    system: ANSWER_SYSTEM,
+    prompt: `${candidateBlock(profile)}\n\n${saved ? `<saved_answers>\n${saved}\n</saved_answers>\n\n` : ""}${jobBlock(job)}\n\n<questions>\n${list}\n</questions>`,
+    maxTokens: 8000,
+    effort: "low",
+  });
 
-    if (response.stop_reason === "refusal") throw new AiError("The model declined this request. Try editing the job text.");
-    if (response.stop_reason === "max_tokens") throw new AiError("The response was cut off. Please try again.");
-    if (!response.parsed_output) throw new AiError("Could not parse the AI response. Please try again.");
-    const out = response.parsed_output;
-    return { ...out, fit_score: Math.max(0, Math.min(100, out.fit_score)) };
-  } catch (err) {
-    if (err instanceof AiError) throw err;
-    if (err instanceof Anthropic.AuthenticationError) throw new AiError("ANTHROPIC_API_KEY is invalid.");
-    if (err instanceof Anthropic.RateLimitError) throw new AiError("Rate limited by the AI provider. Try again in a minute.");
-    if (err instanceof Anthropic.APIError) throw new AiError(`AI request failed (${err.status ?? "network"}).`);
-    throw err;
+  const byKey: Record<string, string> = {};
+  for (const q of questions) {
+    const a = out.answers.find((x) => x.key === q.key)?.answer.trim();
+    if (a) byKey[q.key] = q.maxLength ? fitToLength(a, q.maxLength) : a;
   }
+  return byKey;
+}
+
+/** Trims to a field's character limit, ending on a full sentence when possible. */
+function fitToLength(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+  return lastStop > max * 0.5 ? cut.slice(0, lastStop + 1) : cut.trimEnd();
 }

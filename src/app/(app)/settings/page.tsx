@@ -45,8 +45,13 @@ export default async function SettingsPage() {
         <h2 className="pt-2 font-semibold">3. Use</h2>
         <p className="text-sm">
           Open any application form on Greenhouse, Lever, Ashby, Workday or a company site, then click the extension and press
-          <b> Autofill</b>. Filled fields are highlighted. Check them, answer anything left blank, then submit. Press <b>Mark applied</b> to
-          add the job to your tracker.
+          <b> Autofill</b>. Fields from your profile are highlighted in indigo. If long-answer questions are left empty, press
+          <b> Draft answers with AI</b>: answers are written from your resume and the job description and highlighted in amber.
+          Check and edit everything, then submit. Press <b>Mark applied</b> to add the job to your tracker.
+        </p>
+        <p className="hint">
+          AI drafting uses whichever key is set on the server: OPENAI_API_KEY, NVIDIA_API_KEY or ANTHROPIC_API_KEY. Each draft
+          counts toward your daily AI limit.
         </p>
       </section>
     </>

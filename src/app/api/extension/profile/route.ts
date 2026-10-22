@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { aiEnabled } from "@/lib/ai";
 import { userFromApiToken } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
 import { findJobByUrl, json, preflight } from "@/lib/extension";
@@ -42,6 +43,7 @@ export async function GET(request: Request) {
     },
     answers: profile.answers,
     hasResume: Boolean(profile.resumePdfBase64),
+    ai: aiEnabled(),
     coverLetter,
     job,
   });

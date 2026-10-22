@@ -72,7 +72,9 @@ export function AnalyzePanel({ jobId, enabled, initial }: { jobId: number; enabl
         {analysis && <span className="badge tabular-nums">AI fit {analysis.fit_score}/100</span>}
       </div>
       {!enabled ? (
-        <p className="mt-2 text-sm text-muted">Set ANTHROPIC_API_KEY on the server to enable AI tailoring.</p>
+        <p className="mt-2 text-sm text-muted">
+          Add an AI key on the server (OPENAI_API_KEY, NVIDIA_API_KEY or ANTHROPIC_API_KEY) to enable AI tailoring.
+        </p>
       ) : (
         <>
           <p className="mt-2 text-sm text-muted">
