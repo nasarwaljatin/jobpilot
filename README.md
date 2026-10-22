@@ -41,7 +41,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 and sign up. With no `DATABASE_URL` set, an embedded Postgres (PGlite) is created in `.data/` and seeded automatically. On the dashboard, press **Refresh jobs** to pull roles, then fill in your **Profile**.
+Open http://localhost:3000 and sign up. With no `DATABASE_URL` set, an embedded Postgres (PGlite) is created in `~/.jobpilot/pglite` (override with `PGLITE_DIR`) and seeded automatically. On the dashboard, press **Refresh jobs** to pull roles, then fill in your **Profile**.
 
 To enable AI tailoring, copy `.env.example` to `.env.local` and set `ANTHROPIC_API_KEY`.
 

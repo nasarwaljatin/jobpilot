@@ -1,10 +1,23 @@
 import "server-only";
 import { and, desc, eq, gte, ilike, or, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
+import { INDIA_PATTERN } from "./locations";
 
-export type MatchFilters = { q?: string; minScore?: number; remote?: boolean; entryOnly?: boolean; limit?: number; offset?: number };
+export type MatchFilters = {
+  q?: string;
+  minScore?: number;
+  remote?: boolean;
+  entryOnly?: boolean;
+  india?: boolean;
+  limit?: number;
+  offset?: number;
+};
 
-const ENTRY_SQL = sql`${schema.jobs.title} ~* '(intern|new grad|graduate|entry|junior|associate|apprentice|trainee|campus|early career|university|student|fresher)'`;
+// Mirrors the matcher: entry-level by title, or by an explicit student label from the board.
+// \m and \M are Postgres word boundaries, so "Internal Systems" doesn't count as an internship.
+const ENTRY_SQL = sql`(${schema.jobs.title} ~* '\\m(interns?|internship|new grad|graduate|entry|junior|associate|apprentice|trainee|campus|early career|university|student|freshers?|sde[- ]?(1|i)|engineer[- ]i)\\M'
+  or ${schema.jobs.employmentType} ~* '(intern|entry[- ]level|graduate|fresher|trainee|apprentice)')`;
+export const INDIA_SQL = sql`${schema.jobs.location} ~* ${INDIA_PATTERN}`;
 
 export async function getMatches(userId: string, f: MatchFilters = {}) {
   const db = await getDb();
@@ -12,6 +25,7 @@ export async function getMatches(userId: string, f: MatchFilters = {}) {
   if (f.minScore) conditions.push(gte(schema.matches.score, f.minScore));
   if (f.remote) conditions.push(eq(schema.jobs.isRemote, true));
   if (f.entryOnly) conditions.push(ENTRY_SQL);
+  if (f.india) conditions.push(INDIA_SQL);
   if (f.q) {
     const like = `%${f.q}%`;
     conditions.push(or(ilike(schema.jobs.title, like), ilike(schema.companies.name, like), ilike(schema.jobs.location, like))!);

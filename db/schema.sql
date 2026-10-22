@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS companies (
   id              serial PRIMARY KEY,
   name            text NOT NULL,
-  board           text NOT NULL CHECK (board IN ('greenhouse', 'lever', 'ashby')),
+  board           text NOT NULL,
   slug            text NOT NULL,
   job_count       integer NOT NULL DEFAULT 0,
   last_fetched_at timestamptz,
@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS companies (
   created_at      timestamptz NOT NULL DEFAULT now(),
   UNIQUE (board, slug)
 );
+-- Recreated on every run so databases created before a board was added pick up the new list.
+ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_board_check;
+ALTER TABLE companies ADD CONSTRAINT companies_board_check
+  CHECK (board IN ('greenhouse', 'lever', 'ashby', 'smartrecruiters'));
 
 CREATE TABLE IF NOT EXISTS jobs (
   id              serial PRIMARY KEY,

@@ -6,7 +6,7 @@ import { JobList } from "@/components/JobList";
 import { EmptyState, PageHeader, timeAgo } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
-import { getMatches } from "@/lib/queries";
+import { getMatches, INDIA_SQL } from "@/lib/queries";
 
 export default async function DashboardPage() {
   const user = await requireUser();
@@ -15,7 +15,11 @@ export default async function DashboardPage() {
   const [[profile], [jobStats], [strong], statusRows, top] = await Promise.all([
     db.select().from(schema.profiles).where(eq(schema.profiles.userId, user.id)),
     db
-      .select({ active: sql<number>`count(*) filter (where ${schema.jobs.isActive})::int`, lastFetch: max(schema.jobs.lastSeenAt) })
+      .select({
+        active: sql<number>`count(*) filter (where ${schema.jobs.isActive})::int`,
+        india: sql<number>`count(*) filter (where ${schema.jobs.isActive} and ${INDIA_SQL})::int`,
+        lastFetch: max(schema.jobs.lastSeenAt),
+      })
       .from(schema.jobs),
     db
       .select({ n: sql<number>`count(*)::int` })
@@ -39,6 +43,7 @@ export default async function DashboardPage() {
 
   const stats = [
     ["Open roles tracked", jobStats.active],
+    ["Open roles in India", jobStats.india],
     ["Your matches", top.total],
     ["Strong matches (70%+)", strong.n],
     ["Applied", applied],
@@ -59,7 +64,7 @@ export default async function DashboardPage() {
         </div>
       )}
 
-      <section className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <section className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {stats.map(([label, value]) => (
           <div key={label} className="card p-4">
             <p className="text-xs text-muted">{label}</p>

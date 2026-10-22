@@ -8,10 +8,19 @@ import { fetchBoard } from "./sources";
 
 export type RefreshResult = { company: string; jobs: number; error?: string };
 
+// Hard cap per company so one slow board can't hold a worker for the whole run.
+const COMPANY_TIMEOUT_MS = 100_000;
+
 export async function refreshCompany(db: DB, company: Company): Promise<RefreshResult> {
   const runStart = new Date();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const fetched = await fetchBoard(company.board, company.slug);
+    const fetched = await Promise.race([
+      fetchBoard(company.board, company.slug),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out after ${COMPANY_TIMEOUT_MS / 1000}s`)), COMPANY_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
     // A single upsert batch may not touch the same row twice, so drop duplicate postings.
     const unique = [...new Map(fetched.map((j) => [j.externalId, j])).values()];
     const rows = unique.map((j) => ({
@@ -66,19 +75,30 @@ export async function refreshCompany(db: DB, company: Company): Promise<RefreshR
   }
 }
 
-/** Fetches every tracked company (6 at a time) and then re-scores all users. */
+// Serverless functions here are capped at 300s. Stop starting new companies after this,
+// leaving room for in-flight fetches and re-scoring; skipped companies go first next run.
+const START_BUDGET_MS = 180_000;
+
+/** Fetches tracked companies (6 at a time, least recently fetched first), then re-scores all users. */
 export async function refreshAllCompanies(db: DB): Promise<RefreshResult[]> {
-  const all = await db.select().from(schema.companies);
+  const startedAt = Date.now();
+  const all = await db
+    .select()
+    .from(schema.companies)
+    .orderBy(sql`${schema.companies.lastFetchedAt} asc nulls first`);
   const results: RefreshResult[] = [];
   let next = 0;
   // Fetches run concurrently; DB writes from each worker are small batches.
   const worker = async () => {
-    while (next < all.length) {
+    while (next < all.length && Date.now() - startedAt < START_BUDGET_MS) {
       const company = all[next++];
       results.push(await refreshCompany(db, company));
     }
   };
   await Promise.all(Array.from({ length: Math.min(6, all.length) }, worker));
+  for (const skipped of all.slice(next)) {
+    results.push({ company: skipped.name, jobs: 0, error: "Skipped (time budget); fetched first next run" });
+  }
   await recomputeAllMatches(db);
   return results;
 }

@@ -9,6 +9,7 @@ const BOARD_URL = {
   greenhouse: (s: string) => `https://boards.greenhouse.io/${s}`,
   lever: (s: string) => `https://jobs.lever.co/${s}`,
   ashby: (s: string) => `https://jobs.ashbyhq.com/${s}`,
+  smartrecruiters: (s: string) => `https://careers.smartrecruiters.com/${s}`,
 };
 
 export default async function CompaniesPage() {
@@ -26,8 +27,8 @@ export default async function CompaniesPage() {
       <section className="card mb-6 p-5">
         <h2 className="font-semibold">Add a company</h2>
         <p className="hint mb-4">
-          Open the company&apos;s careers page and click any job. If the link goes to boards.greenhouse.io, jobs.lever.co or
-          jobs.ashbyhq.com, paste it here.
+          Open the company&apos;s careers page and click any job. If the link goes to boards.greenhouse.io, jobs.lever.co,
+          jobs.ashbyhq.com or jobs.smartrecruiters.com, paste it here. SmartRecruiters companies are limited to their India roles.
         </p>
         <ActionForm action={addCompany} className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
           <div>
@@ -44,6 +45,7 @@ export default async function CompaniesPage() {
               <option value="greenhouse">Greenhouse</option>
               <option value="lever">Lever</option>
               <option value="ashby">Ashby</option>
+              <option value="smartrecruiters">SmartRecruiters</option>
             </select>
             <SubmitButton pendingText="Checking…">Add</SubmitButton>
           </div>

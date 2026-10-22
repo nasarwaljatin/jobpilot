@@ -15,6 +15,7 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
     minScore: parseInt(sp.min ?? "0", 10) || 0,
     remote: sp.remote === "1",
     entryOnly: sp.entry === "1",
+    india: sp.india === "1",
   };
   const { rows, total } = await getMatches(user.id, { ...filters, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -44,6 +45,9 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
             <option value="80">80%+</option>
           </select>
         </div>
+        <label className="flex h-[38px] items-center gap-2 text-sm">
+          <input type="checkbox" name="india" value="1" defaultChecked={filters.india} /> India only
+        </label>
         <label className="flex h-[38px] items-center gap-2 text-sm">
           <input type="checkbox" name="entry" value="1" defaultChecked={filters.entryOnly} /> Internships / entry-level
         </label>

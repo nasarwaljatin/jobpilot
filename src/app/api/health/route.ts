@@ -27,6 +27,7 @@ export async function GET() {
     database = { ok: false, error: e.code ?? "connection_failed" };
   }
 
-  const ok = env.DATABASE_URL && env.AUTH_SECRET && database.ok === true;
+  // Local dev runs without DATABASE_URL/AUTH_SECRET by design (embedded DB, dev-only secret).
+  const ok = database.ok === true && (env.AUTH_SECRET || process.env.NODE_ENV !== "production");
   return Response.json({ ok, env, database }, { status: ok ? 200 : 503 });
 }

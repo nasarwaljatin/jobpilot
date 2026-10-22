@@ -54,7 +54,7 @@ export const profiles = pgTable("profiles", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
-export type Board = "greenhouse" | "lever" | "ashby";
+export type Board = "greenhouse" | "lever" | "ashby" | "smartrecruiters";
 
 export const companies = pgTable("companies", {
   id: serial("id").primaryKey(),

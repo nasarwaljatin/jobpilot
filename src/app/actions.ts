@@ -9,7 +9,9 @@ import { extractText } from "unpdf";
 import { endSession, requireUser, startSession } from "@/lib/auth";
 import { getDb, schema } from "@/lib/db";
 import { sessionConfigError } from "@/lib/session";
-import { APPLICATION_STATUSES, type ApplicationStatus } from "@/lib/db/schema";
+import { APPLICATION_STATUSES, type ApplicationStatus, type Board } from "@/lib/db/schema";
+
+const BOARDS = ["greenhouse", "lever", "ashby", "smartrecruiters"] as const satisfies readonly Board[];
 import { refreshAllCompanies, refreshCompany } from "@/lib/ingest";
 import { recomputeMatchesForUser } from "@/lib/matcher";
 import { normalizeSkills } from "@/lib/skills";
@@ -156,12 +158,12 @@ export async function addCompany(_: ActionState, fd: FormData): Promise<ActionSt
   if (!parsed) {
     const board = str(fd, "board");
     const slug = str(fd, "slug") || input;
-    if ((board === "greenhouse" || board === "lever" || board === "ashby") && /^[\w.-]+$/.test(slug)) {
-      parsed = { board, slug };
+    if ((BOARDS as readonly string[]).includes(board) && /^[\w.-]+$/.test(slug)) {
+      parsed = { board: board as Board, slug };
     }
   }
   if (!parsed) {
-    return { error: "Paste a Greenhouse, Lever or Ashby careers URL, or choose a board and enter its slug." };
+    return { error: "Paste a Greenhouse, Lever, Ashby or SmartRecruiters careers URL, or choose a board and enter its slug." };
   }
 
   let count: number;

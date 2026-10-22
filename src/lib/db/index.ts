@@ -1,5 +1,6 @@
 import "server-only";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { drizzle as drizzlePostgres, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -9,7 +10,7 @@ import seedCompanies from "../../../db/seed-companies.json";
 export type DB = PostgresJsDatabase<typeof schema>;
 
 // With DATABASE_URL set (production: Neon / Supabase / any Postgres) we use postgres-js.
-// Without it, local dev runs on an embedded PGlite database in ./.data — zero setup.
+// Without it, local dev runs on an embedded PGlite database in ~/.jobpilot — zero setup.
 async function createDb(): Promise<DB> {
   // Vercel's Neon integration sets both names; a manually added variable is usually DATABASE_URL.
   const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
@@ -25,7 +26,8 @@ async function createDb(): Promise<DB> {
 
   const { PGlite } = await import("@electric-sql/pglite");
   const { drizzle: drizzlePglite } = await import("drizzle-orm/pglite");
-  const dir = path.join(process.cwd(), ".data", "pglite");
+  // Kept outside the project so the dev server's file watcher doesn't reload on every DB write.
+  const dir = process.env.PGLITE_DIR || path.join(os.homedir(), ".jobpilot", "pglite");
   fs.mkdirSync(dir, { recursive: true });
   const client = new PGlite(dir);
   await client.exec(fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8"));
