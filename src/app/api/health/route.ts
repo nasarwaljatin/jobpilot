@@ -16,6 +16,18 @@ export async function GET() {
   };
   const provider = activeProvider();
   const ai = provider ? { provider, model: activeModel(provider) } : null;
+  // Names only (never values) of AI-looking variables, to spot typos such as "NVIDIA_KEY" or a stray space.
+  const aiVariables = Object.keys(process.env)
+    .filter((k) => /nvidia|openai|anthropic|llm|api[\s_-]?key/i.test(k))
+    .map((k) => ({ name: k, hasValue: Boolean(process.env[k]?.trim()) }));
+  // Which deployment answered (Vercel system variables), to confirm a redeploy actually went live.
+  const deployment = process.env.VERCEL
+    ? {
+        environment: process.env.VERCEL_ENV,
+        commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7),
+        id: process.env.VERCEL_DEPLOYMENT_ID?.slice(-8),
+      }
+    : null;
 
   let database: Record<string, unknown>;
   try {
@@ -34,5 +46,5 @@ export async function GET() {
 
   // Local dev runs without DATABASE_URL/AUTH_SECRET by design (embedded DB, dev-only secret).
   const ok = database.ok === true && (env.AUTH_SECRET || process.env.NODE_ENV !== "production");
-  return Response.json({ ok, env, ai, database }, { status: ok ? 200 : 503 });
+  return Response.json({ ok, env, ai, aiVariables, deployment, database }, { status: ok ? 200 : 503 });
 }
