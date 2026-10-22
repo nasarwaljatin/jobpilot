@@ -8,8 +8,9 @@ You still review and submit every application yourself. JobPilot only reads publ
 
 | | |
 |---|---|
-| **Discover** | A daily cron pulls every open role from 45+ companies through the official public APIs of Greenhouse, Lever and Ashby. To add a company, paste its careers URL. |
+| **Discover** | A daily cron pulls open roles from 65 companies through the official public APIs of Greenhouse, Lever, Ashby and SmartRecruiters, including India-heavy employers such as Swiggy, Bosch, ServiceNow and Freshworks (about 2,000 roles in India). To add a company, paste its careers URL. |
 | **Match** | A deterministic scorer (0–100) weighs skill overlap (100+ skill taxonomy with aliases), title fit against your target roles, seniority (internship and new-grad roles rank first), and location or remote preference. |
+| **India focus** | An *India only* filter, a preferred location of "India" that matches any Indian city, and ranking that understands Indian entry titles (SDE 1, GET) and ignores remote roles locked to other countries. |
 | **Tailor** | One click calls Claude with structured outputs and returns an honest fit score, strengths, gaps with fixes, rewritten resume bullets, ATS keywords, a cover letter and a referral email. Everything comes only from facts in your resume. |
 | **Autofill** | A Manifest V3 Chrome extension fills name, contact, links, education and saved screening answers, and attaches your resume PDF across frames. It never presses Submit. |
 | **Track** | A pipeline with the stages saved → applied → assessment → interview → offer / rejected, plus notes. The extension's *Mark applied* button logs the job. |
@@ -23,7 +24,7 @@ You still review and submit every application yourself. JobPilot only reads publ
 - Vercel Cron for the daily job refresh
 
 ```
-Vercel Cron ──► /api/cron/fetch ──► Greenhouse / Lever / Ashby APIs
+Vercel Cron ──► /api/cron/fetch ──► Greenhouse / Lever / Ashby / SmartRecruiters APIs
                      │
                      ▼
              Postgres (companies, jobs) ──► matcher ──► matches (per user)
@@ -68,7 +69,7 @@ To enable AI tailoring, copy `.env.example` to `.env.local` and set `ANTHROPIC_A
 db/schema.sql               Postgres schema (idempotent)
 db/seed-companies.json      Default companies (all verified live)
 scripts/migrate.mjs         Applies schema + seeds to DATABASE_URL
-src/lib/sources/            Greenhouse / Lever / Ashby fetchers + HTML→text
+src/lib/sources/            Greenhouse / Lever / Ashby / SmartRecruiters fetchers
 src/lib/skills.ts           Skill taxonomy and extraction
 src/lib/matcher.ts          Scoring and per-user match materialisation
 src/lib/ingest.ts           Concurrent refresh with upserts and closed-job detection
