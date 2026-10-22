@@ -14,11 +14,26 @@ const KEY_ENV: Record<Provider, string> = {
   nvidia: "NVIDIA_API_KEY",
 };
 
+// NVIDIA lists many models, but which ones a given key may call varies by account. Without an
+// explicit LLM_MODEL we try these in order and stick with the first that the key can use.
+const NVIDIA_MODELS = [
+  "nvidia/llama-3.1-nemotron-70b-instruct",
+  "mistralai/mistral-large-2-instruct",
+  "deepseek-ai/deepseek-v4.1-flash",
+  "moonshotai/kimi-k2.6",
+  "google/gemma-4-31b-it",
+  "openai/gpt-oss-20b",
+  "nvidia/nemotron-3-super-120b-a12b",
+];
+
 const DEFAULT_MODEL: Record<Provider, string> = {
   anthropic: "claude-opus-5-5",
   openai: "gpt-4.1-mini",
-  nvidia: "nvidia/nemotron-3-super-120b-a12b",
+  nvidia: NVIDIA_MODELS[0],
 };
+
+// The NVIDIA model that last worked in this server instance (moved to the front of the chain).
+let workingNvidiaModel: string | undefined;
 
 export class AiError extends Error {}
 
@@ -31,7 +46,19 @@ export function activeProvider(): Provider | null {
 }
 
 export function activeModel(p: Provider): string {
-  return process.env.LLM_MODEL || (p === "anthropic" ? process.env.ANTHROPIC_MODEL : undefined) || DEFAULT_MODEL[p];
+  return (
+    process.env.LLM_MODEL ||
+    (p === "anthropic" ? process.env.ANTHROPIC_MODEL : undefined) ||
+    (p === "nvidia" ? workingNvidiaModel : undefined) ||
+    DEFAULT_MODEL[p]
+  );
+}
+
+/** Models to try, in order. An explicit LLM_MODEL is the only candidate. */
+function candidateModels(p: "openai" | "nvidia"): string[] {
+  if (process.env.LLM_MODEL) return [process.env.LLM_MODEL];
+  if (p === "openai") return [DEFAULT_MODEL.openai];
+  return workingNvidiaModel ? [workingNvidiaModel, ...NVIDIA_MODELS.filter((m) => m !== workingNvidiaModel)] : NVIDIA_MODELS;
 }
 
 export const aiEnabled = () => activeProvider() !== null;
@@ -83,8 +110,49 @@ function extractJson(text: string): unknown {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+// Statuses meaning "this model can't serve this key right now", so the next candidate is tried:
+// not found / not enabled for the account (404, 403), retired (410), or down (5xx).
+const tryNextModel = (err: unknown) =>
+  err instanceof OpenAI.APIError && err.status !== undefined && [403, 404, 410, 500, 502, 503].includes(err.status);
+
 async function viaOpenAiCompatible<S extends z.ZodType>(provider: "openai" | "nvidia", schema: S, req: JsonRequest): Promise<z.infer<S>> {
-  const model = activeModel(provider);
+  const models = candidateModels(provider);
+  const unavailable: string[] = [];
+  for (const model of models) {
+    try {
+      const out = await completeWithModel(provider, model, schema, req);
+      if (provider === "nvidia") workingNvidiaModel = model;
+      return out;
+    } catch (err) {
+      if (!tryNextModel(err)) throw mapOpenAiError(err, provider, model);
+      unavailable.push(`${model} (${(err as InstanceType<typeof OpenAI.APIError>).status})`);
+    }
+  }
+  throw new AiError(
+    models.length === 1
+      ? `Model "${models[0]}" isn't available to your ${KEY_ENV[provider]}. Pick another model for LLM_MODEL.`
+      : `None of the default ${provider} models are available to your key (${unavailable.join(", ")}). Set LLM_MODEL to a model your account can use.`,
+  );
+}
+
+function mapOpenAiError(err: unknown, provider: "openai" | "nvidia", model: string): unknown {
+  if (err instanceof AiError) return err;
+  const keyName = KEY_ENV[provider];
+  if (err instanceof OpenAI.AuthenticationError) return new AiError(`${keyName} is invalid.`);
+  if (err instanceof OpenAI.RateLimitError) return new AiError(`Rate limited by ${provider}. Try again in a minute.`);
+  if (err instanceof OpenAI.APIError) {
+    return new AiError(`AI request to ${model} failed (${err.status ?? "network"}): ${err.message.slice(0, 160)}`);
+  }
+  return err;
+}
+
+/** One model: request, validate against the schema, and retry once with the validation error. */
+async function completeWithModel<S extends z.ZodType>(
+  provider: "openai" | "nvidia",
+  model: string,
+  schema: S,
+  req: JsonRequest,
+): Promise<z.infer<S>> {
   const client = new OpenAI({
     apiKey: apiKey(provider),
     // OPENAI_BASE_URL also lets any OpenAI-compatible host (Groq, OpenRouter, a local server) stand in.
@@ -102,27 +170,18 @@ async function viaOpenAiCompatible<S extends z.ZodType>(provider: "openai" | "nv
   ];
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    let reply: string;
-    try {
-      const completion = await client.chat.completions.create({
-        model,
-        messages,
-        temperature: 0.4,
-        ...(provider === "openai"
-          ? { max_completion_tokens: req.maxTokens, response_format: { type: "json_object" as const } }
-          : { max_tokens: req.maxTokens }),
-      });
-      reply = completion.choices[0]?.message?.content ?? "";
-      if (completion.choices[0]?.finish_reason === "length") throw new AiError("The response was cut off. Please try again.");
-    } catch (err) {
-      if (err instanceof AiError) throw err;
-      const keyName = KEY_ENV[provider];
-      if (err instanceof OpenAI.AuthenticationError) throw new AiError(`${keyName} is invalid.`);
-      if (err instanceof OpenAI.NotFoundError) throw new AiError(`Model "${model}" isn't available on ${provider}. Set LLM_MODEL.`);
-      if (err instanceof OpenAI.RateLimitError) throw new AiError(`Rate limited by ${provider}. Try again in a minute.`);
-      if (err instanceof OpenAI.APIError) throw new AiError(`AI request failed (${err.status ?? "network"}).`);
-      throw err;
-    }
+    // API errors propagate to the caller, which decides whether to try the next model.
+    const completion = await client.chat.completions.create({
+      model,
+      messages,
+      temperature: 0.4,
+      ...(provider === "openai"
+        ? { max_completion_tokens: req.maxTokens, response_format: { type: "json_object" as const } }
+        : // Several NVIDIA-hosted models reject large max_tokens; 4096 covers these JSON replies.
+          { max_tokens: Math.min(req.maxTokens, 4096) }),
+    });
+    const reply = completion.choices[0]?.message?.content ?? "";
+    if (completion.choices[0]?.finish_reason === "length") throw new AiError("The response was cut off. Please try again.");
 
     let problem: string;
     try {
