@@ -11,10 +11,17 @@ function setResult(text, ok = true) {
 }
 
 async function api(path, init = {}) {
-  const res = await fetch(`${config.server.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json", ...(init.headers || {}) },
-  });
+  let res;
+  try {
+    res = await fetch(`${config.server.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json", ...(init.headers || {}) },
+    });
+  } catch {
+    // fetch() only rejects when no readable response arrived: offline, wrong server URL, or the
+    // server was cut off by its hosting time limit (those replies carry no CORS headers).
+    throw new Error("Couldn't get a reply from JobPilot (network error or the server timed out). Try again in a minute.");
+  }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
   return body;
@@ -97,7 +104,8 @@ async function fill() {
 async function draftAnswers() {
   if (pendingQuestions.length === 0) return;
   $("draft").disabled = true;
-  setResult("Drafting answers from your resume… (10–40 seconds)");
+  // Chrome cancels the popup's requests when it closes, so the user must keep it open.
+  setResult("Drafting answers from your resume… keep this popup open (up to a minute or two).");
   try {
     // Page text gives the AI the job description when this isn't a job JobPilot tracks.
     const [top] = await chrome.scripting.executeScript({

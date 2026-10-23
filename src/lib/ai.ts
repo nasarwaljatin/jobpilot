@@ -44,6 +44,8 @@ export async function analyzeFit(profile: Profile, job: JobContext): Promise<Fit
     prompt: `${candidateBlock(profile)}\n\n${jobBlock(job)}\n\nAnalyze this candidate's fit for the job and draft the application materials.`,
     maxTokens: 16000,
     effort: "medium",
+    // The /api/analyze route allows 300s; leave room for the database work around the call.
+    deadlineMs: 240_000,
   });
   return { ...out, fit_score: Math.max(0, Math.min(100, out.fit_score)) };
 }
@@ -85,6 +87,8 @@ export async function draftAnswers(
     prompt: `${candidateBlock(profile)}\n\n${saved ? `<saved_answers>\n${saved}\n</saved_answers>\n\n` : ""}${jobBlock(job)}\n\n<questions>\n${list}\n</questions>`,
     maxTokens: 8000,
     effort: "low",
+    // The extension waits on this; /api/extension/answers allows 150s.
+    deadlineMs: 110_000,
   });
 
   const byKey: Record<string, string> = {};

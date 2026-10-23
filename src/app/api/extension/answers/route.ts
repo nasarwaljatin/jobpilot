@@ -5,7 +5,7 @@ import { getDb, schema } from "@/lib/db";
 import { findJobByUrl, json, preflight } from "@/lib/extension";
 import { AI_DAILY_LIMIT, consumeAiQuota, refundAiQuota } from "@/lib/usage";
 
-export const maxDuration = 120;
+export const maxDuration = 150;
 export const OPTIONS = preflight;
 
 const MAX_QUESTIONS = 12;

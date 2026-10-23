@@ -14,17 +14,21 @@ const KEY_ENV: Record<Provider, string> = {
   nvidia: "NVIDIA_API_KEY",
 };
 
-// NVIDIA lists many models, but which ones a given key may call varies by account. Without an
-// explicit LLM_MODEL we try these in order and stick with the first that the key can use.
+// NVIDIA lists many models, but which ones a given key may call varies by account, and the free
+// tier can queue big models for a long time. Without an explicit LLM_MODEL we try these, fastest
+// first, and stick with the first that answers.
 const NVIDIA_MODELS = [
-  "nvidia/llama-3.1-nemotron-70b-instruct",
-  "mistralai/mistral-large-2-instruct",
   "deepseek-ai/deepseek-v4.1-flash",
-  "moonshotai/kimi-k2.6",
-  "google/gemma-4-31b-it",
   "openai/gpt-oss-20b",
+  "google/gemma-4-31b-it",
+  "mistralai/mistral-large-2-instruct",
+  "nvidia/llama-3.1-nemotron-70b-instruct",
+  "moonshotai/kimi-k2.6",
   "nvidia/nemotron-3-super-120b-a12b",
 ];
+
+// Each model attempt gets at most this long, so one stuck model can't use up the whole request.
+const ATTEMPT_TIMEOUT_MS = 45_000;
 
 const DEFAULT_MODEL: Record<Provider, string> = {
   anthropic: "claude-opus-5-5",
@@ -36,6 +40,8 @@ const DEFAULT_MODEL: Record<Provider, string> = {
 let workingNvidiaModel: string | undefined;
 
 export class AiError extends Error {}
+/** The model stopped at its token limit; another model may fit the answer. */
+class TruncatedError extends AiError {}
 
 const apiKey = (p: Provider) => process.env[KEY_ENV[p]];
 
@@ -63,7 +69,14 @@ function candidateModels(p: "openai" | "nvidia"): string[] {
 
 export const aiEnabled = () => activeProvider() !== null;
 
-type JsonRequest = { system: string; prompt: string; maxTokens: number; effort?: "low" | "medium" | "high" };
+type JsonRequest = {
+  system: string;
+  prompt: string;
+  maxTokens: number;
+  effort?: "low" | "medium" | "high";
+  /** Total time allowed across all model attempts; keep it below the route's maxDuration. */
+  deadlineMs: number;
+};
 
 /** Runs one prompt and returns output validated against `schema`, whichever provider is active. */
 export async function generateJson<S extends z.ZodType>(schema: S, req: JsonRequest): Promise<z.infer<S>> {
@@ -75,7 +88,7 @@ export async function generateJson<S extends z.ZodType>(schema: S, req: JsonRequ
 }
 
 async function viaAnthropic<S extends z.ZodType>(schema: S, req: JsonRequest): Promise<z.infer<S>> {
-  const client = new Anthropic();
+  const client = new Anthropic({ timeout: req.deadlineMs, maxRetries: 1 });
   try {
     const response = await client.beta.messages.parse({
       model: activeModel("anthropic"),
@@ -112,26 +125,45 @@ function extractJson(text: string): unknown {
 
 // Statuses meaning "this model can't serve this key right now", so the next candidate is tried:
 // not found / not enabled for the account (404, 403), retired (410), or down (5xx).
-const tryNextModel = (err: unknown) =>
-  err instanceof OpenAI.APIError && err.status !== undefined && [403, 404, 410, 500, 502, 503].includes(err.status);
+// Also timeouts, dropped connections, and replies a model couldn't fit or format.
+function nextModelReason(err: unknown): string | null {
+  if (err instanceof TruncatedError) return "cut off";
+  if (err instanceof OpenAI.APIConnectionTimeoutError) return "timed out";
+  if (err instanceof OpenAI.APIConnectionError) return "connection failed";
+  if (err instanceof OpenAI.APIError && err.status !== undefined && [403, 404, 410, 500, 502, 503, 504].includes(err.status)) {
+    return String(err.status);
+  }
+  return null;
+}
+
+// Below this much remaining time, starting another model attempt isn't worth it.
+const MIN_ATTEMPT_MS = 10_000;
 
 async function viaOpenAiCompatible<S extends z.ZodType>(provider: "openai" | "nvidia", schema: S, req: JsonRequest): Promise<z.infer<S>> {
+  const startedAt = Date.now();
   const models = candidateModels(provider);
-  const unavailable: string[] = [];
+  const skipped: string[] = [];
   for (const model of models) {
+    const remaining = req.deadlineMs - (Date.now() - startedAt);
+    if (remaining < MIN_ATTEMPT_MS) break;
     try {
-      const out = await completeWithModel(provider, model, schema, req);
+      const out = await completeWithModel(provider, model, schema, req, Math.min(ATTEMPT_TIMEOUT_MS, remaining));
       if (provider === "nvidia") workingNvidiaModel = model;
       return out;
     } catch (err) {
-      if (!tryNextModel(err)) throw mapOpenAiError(err, provider, model);
-      unavailable.push(`${model} (${(err as InstanceType<typeof OpenAI.APIError>).status})`);
+      const reason = nextModelReason(err);
+      if (!reason) throw mapOpenAiError(err, provider, model);
+      skipped.push(`${model.split("/").pop()}: ${reason}`);
     }
+  }
+  if (skipped.length < models.length) {
+    // Ran out of time before trying every model.
+    throw new AiError(`The AI provider is responding slowly right now (${skipped.join("; ")}). Please try again in a minute.`);
   }
   throw new AiError(
     models.length === 1
-      ? `Model "${models[0]}" isn't available to your ${KEY_ENV[provider]}. Pick another model for LLM_MODEL.`
-      : `None of the default ${provider} models are available to your key (${unavailable.join(", ")}). Set LLM_MODEL to a model your account can use.`,
+      ? `Model "${models[0]}" didn't work with your ${KEY_ENV[provider]} (${skipped[0]}). Pick another model for LLM_MODEL.`
+      : `None of the default ${provider} models worked with your key (${skipped.join("; ")}). Set LLM_MODEL to a model your account can use.`,
   );
 }
 
@@ -152,9 +184,13 @@ async function completeWithModel<S extends z.ZodType>(
   model: string,
   schema: S,
   req: JsonRequest,
+  timeoutMs: number,
 ): Promise<z.infer<S>> {
   const client = new OpenAI({
     apiKey: apiKey(provider),
+    // The fallback chain is the retry strategy; the SDK's own silent retries would only add delay.
+    maxRetries: 0,
+    timeout: timeoutMs,
     // OPENAI_BASE_URL also lets any OpenAI-compatible host (Groq, OpenRouter, a local server) stand in.
     baseURL:
       provider === "nvidia"
@@ -181,7 +217,7 @@ async function completeWithModel<S extends z.ZodType>(
           { max_tokens: Math.min(req.maxTokens, 4096) }),
     });
     const reply = completion.choices[0]?.message?.content ?? "";
-    if (completion.choices[0]?.finish_reason === "length") throw new AiError("The response was cut off. Please try again.");
+    if (completion.choices[0]?.finish_reason === "length") throw new TruncatedError("The response was cut off.");
 
     let problem: string;
     try {
@@ -196,5 +232,6 @@ async function completeWithModel<S extends z.ZodType>(
       { role: "user", content: `That reply was not valid (${problem.slice(0, 300)}). Reply again with only the corrected JSON object.` },
     );
   }
-  throw new AiError("The AI reply wasn't in the expected format. Please try again.");
+  // Treated like a cut-off reply: another model may follow the format.
+  throw new TruncatedError("The AI reply wasn't in the expected format.");
 }
