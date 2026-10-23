@@ -61,7 +61,7 @@ export function activeModel(p: Provider): string {
 }
 
 /** Models to try, in order. An explicit LLM_MODEL is the only candidate. */
-function candidateModels(p: "openai" | "nvidia"): string[] {
+export function candidateModels(p: "openai" | "nvidia"): string[] {
   if (process.env.LLM_MODEL) return [process.env.LLM_MODEL];
   if (p === "openai") return [DEFAULT_MODEL.openai];
   return workingNvidiaModel ? [workingNvidiaModel, ...NVIDIA_MODELS.filter((m) => m !== workingNvidiaModel)] : NVIDIA_MODELS;
@@ -167,6 +167,68 @@ async function viaOpenAiCompatible<S extends z.ZodType>(provider: "openai" | "nv
   );
 }
 
+function openAiClient(provider: "openai" | "nvidia", timeoutMs: number): OpenAI {
+  return new OpenAI({
+    apiKey: apiKey(provider),
+    // The fallback chain is the retry strategy; the SDK's own silent retries would only add delay.
+    maxRetries: 0,
+    timeout: timeoutMs,
+    // OPENAI_BASE_URL also lets any OpenAI-compatible host (Groq, OpenRouter, a local server) stand in.
+    baseURL:
+      provider === "nvidia"
+        ? process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1"
+        : process.env.OPENAI_BASE_URL || undefined,
+  });
+}
+
+export type ModelCheck = {
+  model: string;
+  ok: boolean;
+  firstTokenMs?: number;
+  totalMs: number;
+  reasoningChars?: number;
+  reply?: string;
+  error?: string;
+};
+
+/**
+ * Sends a one-word prompt to every candidate model at once (streaming) and reports how fast each
+ * responds, so slow or unavailable models can be told apart with the real key.
+ */
+export async function diagnoseModels(): Promise<{ provider: Provider; checks: ModelCheck[] } | null> {
+  const provider = activeProvider();
+  if (!provider || provider === "anthropic") return provider ? { provider, checks: [] } : null;
+  const client = openAiClient(provider, 40_000);
+  const checks = await Promise.all(
+    candidateModels(provider).map(async (model): Promise<ModelCheck> => {
+      const start = Date.now();
+      let firstTokenMs: number | undefined;
+      let reply = "";
+      let reasoningChars = 0;
+      try {
+        const stream = await client.chat.completions.create({
+          model,
+          messages: [{ role: "user", content: "Reply with just the word OK." }],
+          stream: true,
+          ...(provider === "openai" ? { max_completion_tokens: 200 } : { max_tokens: 200 }),
+        });
+        for await (const chunk of stream) {
+          const delta = chunk.choices[0]?.delta as { content?: string | null; reasoning_content?: string | null } | undefined;
+          if (firstTokenMs === undefined && (delta?.content || delta?.reasoning_content)) firstTokenMs = Date.now() - start;
+          reply += delta?.content ?? "";
+          // Some NVIDIA-hosted models stream their thinking separately before the answer.
+          reasoningChars += delta?.reasoning_content?.length ?? 0;
+        }
+        return { model, ok: true, firstTokenMs, totalMs: Date.now() - start, reasoningChars, reply: reply.trim().slice(0, 60) };
+      } catch (err) {
+        const reason = err instanceof OpenAI.APIError ? `${err.status ?? ""} ${err.message}`.trim() : (err as Error).message;
+        return { model, ok: false, firstTokenMs, totalMs: Date.now() - start, error: reason.slice(0, 200) };
+      }
+    }),
+  );
+  return { provider, checks };
+}
+
 function mapOpenAiError(err: unknown, provider: "openai" | "nvidia", model: string): unknown {
   if (err instanceof AiError) return err;
   const keyName = KEY_ENV[provider];
@@ -186,17 +248,7 @@ async function completeWithModel<S extends z.ZodType>(
   req: JsonRequest,
   timeoutMs: number,
 ): Promise<z.infer<S>> {
-  const client = new OpenAI({
-    apiKey: apiKey(provider),
-    // The fallback chain is the retry strategy; the SDK's own silent retries would only add delay.
-    maxRetries: 0,
-    timeout: timeoutMs,
-    // OPENAI_BASE_URL also lets any OpenAI-compatible host (Groq, OpenRouter, a local server) stand in.
-    baseURL:
-      provider === "nvidia"
-        ? process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1"
-        : process.env.OPENAI_BASE_URL || undefined,
-  });
+  const client = openAiClient(provider, timeoutMs);
   // Not every hosted model supports strict JSON-schema mode, so the schema goes in the prompt
   // and the reply is validated here, with one retry that shows the model its mistake.
   const system = `${req.system}\n\nReply with only a JSON object (no markdown, no commentary) that matches this JSON Schema:\n${JSON.stringify(z.toJSONSchema(schema))}`;
